@@ -1,8 +1,7 @@
 x-airflow-common:
   &airflow-common
-  # Use the same image as the one used in the Dockerfile
-  image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.0.0}
-  # build: .
+  build: ./airflow
+  image: airflow-inference:latest
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -12,7 +11,7 @@ x-airflow-common:
     AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
@@ -25,11 +24,17 @@ x-airflow-common:
     # The following line can be used to set a custom config file, stored in the local config folder
     # If you want to use it, outcomment it and replace airflow.cfg with the name of your config file
     # AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    MLFLOW_TRACKING_URI: 'http://mlflow-server:5500'
+    MLFLOW-S3_ENDPOINT_URL: 'http://minio:9000'
+
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ./models:/app/models
+    - ./config.yml:/app/config.yml
+    - ./env:/app/.env
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -255,6 +260,22 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
-
+mlflow-server:
+  restart: always
+  build: ./mlflow
+  image: mlflow-server
+  container_name: mlflow-server
+  depends_on:
+    - mc
+    - postgres
+  ports:
+    - "5000:5000"
+  environment:
+    - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+    - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  command: mlflow server --port 5000 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres:5432/mlflow
+  networks:
+    - fraud-detection
 volumes:
   postgres-db-volume:
