@@ -260,6 +260,52 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+# MINIO SERVER
+
+mc:
+  image: minio/mc
+  container_name: mc
+  restart: always
+  depends_on:
+    - minio
+  entrypoint: >
+   /bin/sh -c '
+   /tmp/wait-for-it.sh minio:9000 &&
+   /usr/bin/mc alias set minio http://minio:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY} &&
+   /usr/bin/mc mb minio/mlflow &&;
+   exit 0;
+    '
+  volumes:
+    - ./wait-for-it.sh:/tmp/wait-for-it.sh
+  networks:
+    - fraud-detection
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: always
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - fraud-detection
+
+# MLFlow Server
+  # mlflow-server is a custom image that is built from the Dockerfile in the ./mlflow directory
+  # The Dockerfile should be created to install the required dependencies for MLFlow
+  # and to set up the environment for running the MLFlow server.
+  # The mlflow-server service depends on the mc and postgres services.
+  # The mlflow-server service exposes port 5000 for accessing the MLFlow UI.
+  # The mlflow-server service uses environment variables to configure the S3 endpoint and AWS credentials.
 mlflow-server:
   restart: always
   build: ./mlflow
@@ -274,8 +320,24 @@ mlflow-server:
     - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
     - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
     - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-  command: mlflow server --port 5000 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres:5432/mlflow
+  command: mlflow server --port 5000 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@mlflowpostgres/mlflow --default-artifact-root s3://mlflow --serve-artifacts --artifacts-destination s3://mlflow
   networks:
     - fraud-detection
 volumes:
   postgres-db-volume:
+
+networks:
+  fraud-detection:
+    driver: bridge
+  default:
+    external: true
+    name: ${DOCKER_NETWORK_NAME:-airflow-docker_default}
+  minio:
+    external: true
+    name: ${MINIO_NETWORK_NAME:-minio}
+  mlflowpostgres:
+    external: true
+    name: ${MLFLOWPOSTGRES_NETWORK_NAME:-mlflowpostgres}
+  mc:
+    external: true
+    name: ${MC_NETWORK_NAME:-mc}
